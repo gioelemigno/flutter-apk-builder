@@ -1,0 +1,65 @@
+# Build the APK of a Flutter project (read-only mount, clean copy inside the container):
+#
+#   APP_DIR=../my_app APK_NAME=my-app.apk ./run.sh        ->  ./out/my-app.apk
+#
+# Development tasks on a project (read-write mount; analyze / test / codegen / any command):
+#
+#   APP_DIR=../my_app ./dev.sh analyze
+#   APP_DIR=../my_app ./dev.sh test
+#   APP_DIR=../my_app ./dev.sh codegen
+#
+# Image: ${REGISTRY}/flutter-apk-builder:${IMAGE_TAG}. Defaults: docker.io/gmigno and 3.47.9 (override in .env, see .env.example).
+# Tags: 3.47.9 (plain apps), 3.47.9-common (the packages of Timegrapher Log baked in: set IMAGE_TAG=3.47.9-common).
+#
+#   docker compose pull           # download the image instead of building it
+#   ./build-image.sh common       # build the image locally (several minutes, needs normal internet)
+
+x-env: &env
+  HOST_UID: ${HOST_UID:-1000}
+  HOST_GID: ${HOST_GID:-1000}
+
+x-caches: &caches
+  - gradle-cache:/home/flutter/.gradle      # persistent Gradle cache (filled from the image on first use)
+  - pub-cache:/home/flutter/.pub-cache      # persistent pub cache
+  - ./keystore:/root/.android               # persistent debug keystore: same signing key on every build
+
+services:
+  build:
+    image: ${REGISTRY:-docker.io/gmigno}/flutter-apk-builder:${IMAGE_TAG:-3.47.9}
+    build:
+      context: .
+      args:                 # only used by ./build-image.sh; unset = Dockerfile defaults
+        - WARMUP_PROFILE
+        - BASE_IMAGE
+    user: root              # the project is copied inside the container; results are chowned to HOST_UID
+    environment:
+      <<: *env
+      APK_NAME: ${APK_NAME:-app-release.apk}
+      ANALYZE: ${ANALYZE:-1}          # 0 = skip `flutter analyze`
+      BUILD_ARGS: ${BUILD_ARGS:-}     # extra args for `flutter build apk`
+    volumes:
+      - ${APP_DIR:-./app}:/src:ro     # your Flutter project (never modified)
+      - ./out:/out                    # the APK lands here
+      - gradle-cache:/home/flutter/.gradle
+      - pub-cache:/home/flutter/.pub-cache
+      - ./keystore:/root/.android
+
+  dev:
+    image: ${REGISTRY:-docker.io/gmigno}/flutter-apk-builder:${IMAGE_TAG:-3.47.9}
+    user: root
+    working_dir: /work/app
+    environment:
+      <<: *env
+    volumes:
+      - ${APP_DIR:-./app}:/work/app   # your Flutter project, READ-WRITE (generated files are chowned back to you)
+      - gradle-cache:/home/flutter/.gradle
+      - pub-cache:/home/flutter/.pub-cache
+      - ./keystore:/root/.android
+
+# One cache volume per image tag: a volume is filled from the image only when it is created,
+# so switching tag must not reuse the cache of another tag.
+volumes:
+  gradle-cache:
+    name: flutter-apk-builder-gradle-${IMAGE_TAG:-3.47.9}
+  pub-cache:
+    name: flutter-apk-builder-pub-${IMAGE_TAG:-3.47.9}

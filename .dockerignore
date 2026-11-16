@@ -1,0 +1,8 @@
+out
+keystore
+extras
+.env
+.git
+app
+proxy-certs
+compose.proxy.yaml
