@@ -5,10 +5,27 @@ Everything runs inside a ready-made Docker image that the user published on Dock
 small wrapper (compose file and scripts) that runs it. Follow the steps in order, check each result against the "Expected"
 lines, and if something differs, stop and report the difference instead of improvising.
 
+## Start here: ask the user first, before doing anything else
+
+Your **first message** to the user, before checking Docker or downloading anything, is this one short question (then wait for the answer,
+but see below: the preparation can already run while they answer):
+
+> I can build Android apps with a ready-made Docker environment. I suggest we start with a small "Hello World" app to test that everything works
+> (about 3 minutes once the image is downloaded). Do you want to do that, or go straight to another app?
+
+- **Hello World** (or no clear preference) -> after the preparation (sections 2 and 3) go to section 5, then offer section 6.
+- **Another app** -> after the preparation go to section 6 (ask what the app should do).
+- Start the preparation (sections 2 and 3, in the background) right after asking, so the image is already downloading while the user thinks.
+
 ## 0. Rules for long-running work (applies to every step)
 
+- **Pulling an image and building are always long: run them in the background, never in the foreground.** This covers `docker pull`,
+  `./run.sh`, `./dev.sh test` / `codegen`, and the first run that fills the cache volumes. Start the command with `nohup ... > log 2>&1 &` (or your
+  tool's background mode), return control immediately, and check the log every few minutes. A foreground command is usually cut off after about 10
+  minutes, which would lose the work.
+  Wrong: `docker pull gmigno/flutter-apk-builder:3.47.9` and waiting for it. Right: `nohup docker pull gmigno/flutter-apk-builder:3.47.9 > /tmp/pull.log 2>&1 &`.
 - Anything that can take more than about a minute (image download, builds, tests) runs **in the background**, writing to a log
-  file (your tool's background mode, or `nohup ... > log 2>&1 &`). A foreground command is usually limited to about 10 minutes.
+  file as above.
 - Do not narrate progress. Look at the log now and then (every few minutes) and **write to the user when the step has finished or
   when you detect a block** (below). Never leave the user waiting without a message.
 - Run **one** heavy command at a time. Before starting one, check that none is running (`docker ps`).
@@ -54,7 +71,11 @@ Wrapper scripts (in this repository):
 Choose the tag with the environment variable `IMAGE_TAG` (default `3.47.9`), for example `IMAGE_TAG=3.47.9-common APP_DIR=... ./run.sh`.
 The project's own `scripts/*.sh` (if it has them) assume a hand-installed Flutter: do not use them, use the commands above.
 
-## 2. Check Docker is usable
+## 2. Check automatically that Docker works and that a container can run
+
+Do this yourself, without asking the user. Two levels:
+
+**a) Docker is usable**
 
     docker --version
     docker compose version
@@ -65,13 +86,24 @@ Expected: all three work. If the daemon is not running and you are root in a Lin
 if Docker "disappears", start it again (the image stays on disk). If Docker is not available at all, stop and tell the user:
 this method needs Docker. Do not try to install Flutter by hand.
 
-## 3. Get the image
+**b) A container really starts** (smoke test, run it after the pull of section 3, in the background, with a log)
 
-    docker pull gmigno/flutter-apk-builder:3.47.9            # background, about 12 GB
+    nohup docker run --rm gmigno/flutter-apk-builder:3.47.9 flutter --version > /tmp/smoke.log 2>&1 &
+
+Expected: exit code 0 and output with `Flutter 3.47.9` and `Dart 3.13.7` (`channel [user-branch]` is normal). In a proxied sandbox add the options
+of section 3b. If it fails: a TLS error -> section 3b; "no space left on device" -> stop and report `df -h /`; anything else -> stop and report
+the last log lines. Repeat this smoke test whenever Docker had to be restarted, and always before telling the user that the environment is ready.
+If it fails, do not go on to the Hello World or to the user's app.
+
+## 3. Get the image (background)
+
+    nohup docker pull gmigno/flutter-apk-builder:3.47.9 > /tmp/pull.log 2>&1 &         # about 12 GB
     # if the app needs the common packages:
-    docker pull gmigno/flutter-apk-builder:3.47.9-common     # shares most layers with 3.47.9: a much smaller extra download
+    nohup docker pull gmigno/flutter-apk-builder:3.47.9-common > /tmp/pull-common.log 2>&1 &   # shares most layers: much smaller extra download
 
-Expected: pull ends without error. Print and keep the digest (`docker images --digests gmigno/flutter-apk-builder`) for your report.
+Run the pulls one at a time, never in the foreground. Expected: pull ends without error. Print and keep the digest
+(`docker images --digests gmigno/flutter-apk-builder`) for your report. Write to the user when the download has finished (or when a block is detected),
+then run the smoke test of section 2b.
 
 ## 3b. Only if the sandbox reaches the internet through a proxy with its own certificate
 
@@ -107,13 +139,11 @@ If Gradle itself has to download something (a package not cached in the image), 
 not covered here: report it to the user instead of improvising.
 For `docker run ...` commands, pass the same options by hand: `--network host -e HTTPS_PROXY=... -v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro`.
 
-## 4. First contact: ask the user
+## 4. Route by the user's answer
 
-Ask exactly one short question, and wait for the answer:
-
-> The build environment is ready. Do you want to try it first with a small "Hello World" app (about 3 minutes), or go straight to your own app?
-
-- **Yes** -> section 5. **No** -> section 6.
+The question was already asked at the very beginning ("Start here"). When the image is pulled and the smoke test passed, tell the user the environment
+is ready, then follow the answer: **Hello World** -> section 5 (afterwards offer section 6); **another app** -> section 6. If the user has not answered
+yet, remind them once, recommending the Hello World.
 
 ## 5. Optional test: the Hello World app
 
@@ -180,9 +210,9 @@ class _HelloScreenState extends State<HelloScreen> {
 }
 ```
 
-Build it (background, section 0 rules; the first run also creates the cache volumes, which copies a few GB and takes a minute):
+Build it **in the background** (section 0; the first run also creates the cache volumes, which copies a few GB and takes a minute), then write to the user when it is done:
 
-    APP_DIR="<apps>/hello_app" APK_NAME=hello-world.apk ./run.sh
+    APP_DIR="<apps>/hello_app" APK_NAME=hello-world.apk nohup ./run.sh > /tmp/build-hello.log 2>&1 &
 
 Expected: `No issues found!`; the log ends with `✓ Built build/app/outputs/flutter-apk/app-release.apk (~44 MB)`; the APK is `out/hello-world.apk`,
 about 43.9 to 44.0 million bytes; about 2 to 3 minutes.
@@ -206,7 +236,7 @@ may ask to allow "install from unknown sources". Then ask what app they want to 
      section 0 and then report it. The user can add the package to `warmup/common/` and rebuild the image; you do not.
 4. Check and test before building: `APP_DIR=... ./dev.sh analyze` must say `No issues found!`; run `./dev.sh test` if the project has tests; if you changed
    Drift tables run `./dev.sh codegen` (and bump `schemaVersion` with a migration). Typical timings: analyze 30 s, tests 1 to 2 min, codegen 1 min.
-5. Build: `APP_DIR="<apps>/<name>" APK_NAME=<name>.apk ./run.sh` (background). Give the APK to the user with size, `md5sum` and the debug-key note. If the app must not use the
+5. Build **in the background**: `APP_DIR="<apps>/<name>" APK_NAME=<name>.apk nohup ./run.sh > /tmp/build-<name>.log 2>&1 &`, and write to the user when it is done. Give the APK to the user with size, `md5sum` and the debug-key note. If the app must not use the
    network, check the permissions of the built APK: `docker compose run --rm build apkanalyzer manifest permissions /out/<name>.apk`
    (use the same `IMAGE_TAG` as for the build; `INTERNET` must not be listed; the only extra one a Flutter app normally has is
    `<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`).
