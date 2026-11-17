@@ -16,6 +16,8 @@ but see below: the preparation can already run while they answer):
 - **Hello World** (or no clear preference) -> after the preparation (sections 2 and 3) go to section 5, then offer section 6.
 - **Another app** -> after the preparation go to section 6 (ask what the app should do).
 - Start the preparation (sections 2 and 3, in the background) right after asking, so the image is already downloading while the user thinks.
+- In the same first message, add a short heads-up (two lines): the image is about 12 GB and is downloaded from Docker Hub, which can fail or be
+  slow (I will retry and tell you); and the sandbox needs network access to a few domains (section 2a), which the user may have to allow in their settings.
 
 ## 0. Rules for long-running work (applies to every step)
 
@@ -75,6 +77,24 @@ The project's own `scripts/*.sh` (if it has them) assume a hand-installed Flutte
 
 Do this yourself, without asking the user. Two levels:
 
+**a0) Network access (only if you run in a sandbox with restricted internet, e.g. Claude's cloud workspace)**
+
+The pulls and builds need the internet. In Claude (claude.ai app: Settings -> Capabilities) the user must have **"Allow network egress"** turned on, and the
+**Domain allowlist** must be **"All domains"**, or, if it is a custom list, must include at least:
+
+| Purpose | Domains |
+|---|---|
+| Docker Hub (image download) | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`, `docker.io` |
+| Dart / Flutter packages (`pub get`) | `pub.dev`, `storage.googleapis.com` |
+| Android / Gradle libraries (only for packages not cached in the image) | `dl.google.com`, `maven.google.com`, `repo.maven.apache.org`, `repo1.maven.org`, `plugins.gradle.org`, `services.gradle.org` |
+| `sqlite3` library used by `flutter test` | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` |
+
+Test it before the pull, without asking: `curl -sS -o /dev/null -w "%{http_code}\n" https://registry-1.docker.io/v2/` (expected `401`, which means
+"reachable, login needed" and is fine) and `curl -sS -o /dev/null -w "%{http_code}\n" https://pub.dev` (expected `200`). If a request is refused
+(`403`, `Forbidden`, `blocked`, "host not allowed", or a connection that never opens), stop and tell the user exactly which domain was blocked and how to
+fix it: turn on "Allow network egress" and set the Domain allowlist to "All domains" (or add the domain), then say "continue". The list above is what
+the image is known to use; if a build log names another blocked domain, report that one too. Do not work around a block (no mirrors, no other proxies).
+
 **a) Docker is usable**
 
     docker --version
@@ -101,7 +121,16 @@ If it fails, do not go on to the Hello World or to the user's app.
     # if the app needs the common packages:
     nohup docker pull gmigno/flutter-apk-builder:3.47.9-common > /tmp/pull-common.log 2>&1 &   # shares most layers: much smaller extra download
 
-Run the pulls one at a time, never in the foreground. Expected: pull ends without error. Print and keep the digest
+Run the pulls one at a time, never in the foreground. **The download from Docker Hub can fail** (connection reset, `unexpected EOF`, `timeout`,
+`TLS handshake timeout`, `received unexpected HTTP status: 5xx`, or the rate limit `toomanyrequests` / "You have reached your pull rate limit"):
+- Send the user a short message at the **first** failure (what failed, that you will retry), so they are not surprised.
+- Wait at least 2 minutes and run the same `docker pull` again: layers already downloaded are kept, so a retry continues where it stopped. Retry up to
+  **3 times** in total (this overrides the limit of 2 in section 0 for pulls only), always in the background.
+- `toomanyrequests` means Docker Hub's hourly limit for anonymous downloads (10 per hour per IP): wait, do not hammer; if it persists, tell the user
+  (a free `docker login` by the user raises it to 100 per hour; never ask for or paste the password or token in the chat).
+- A `denied` / `unauthorized` / `not found` error is not a glitch: stop and report it (check the image name and that the repository is public).
+- After 3 failed retries stop and report: last log lines, the number of retries, and what you suggest (wait and retry later, check the network access of section 2a).
+Expected: pull ends without error. Print and keep the digest
 (`docker images --digests gmigno/flutter-apk-builder`) for your report. Write to the user when the download has finished (or when a block is detected),
 then run the smoke test of section 2b.
 
